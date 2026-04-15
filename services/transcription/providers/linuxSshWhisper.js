@@ -26,11 +26,12 @@ const { exec } = require('child_process')
 /**
  * Transcribe audio using remote Linux Whisper over SSH.
  *
- * @param {Buffer} audioBuffer  - Not used here; audio is fetched remotely from Supabase
- * @param {string} audioFileUrl - Public Supabase URL the Linux box will download
+ * @param {Buffer} audioBuffer    - Not used here; audio is fetched remotely from Supabase
+ * @param {string} audioFileUrl   - Public Supabase URL the Linux box will download
+ * @param {string} fileExtension  - Audio file extension to use on the remote temp file (e.g. 'webm', 'mp4', 'mp3')
  * @returns {Promise<{success: boolean, transcript: string|null, error: string|null}>}
  */
-async function transcribeAudio(audioBuffer, audioFileUrl) {
+async function transcribeAudio(audioBuffer, audioFileUrl, fileExtension = 'mp3') {
   const remoteVenvPath = process.env.WHISPER_REMOTE_VENV_PATH || '/home/blueweb/whisper-env'
   const sshTarget = process.env.WHISPER_SSH_TARGET || process.env.WHISPER_SSH_HOST || 'linuxbox'
 
@@ -41,7 +42,7 @@ async function transcribeAudio(audioBuffer, audioFileUrl) {
   // Build the remote bash script as a list of commands joined by semicolons.
   // Each step:
   //   - mktemp creates a unique temp base path like /tmp/whisper_abc123
-  //   - curl downloads the audio from Supabase into /tmp/whisper_abc123.mp3
+  //   - curl downloads the audio from Supabase into /tmp/whisper_abc123.webm (or mp4, etc.)
   //   - source activates the Python virtual environment
   //   - whisper transcribes and writes /tmp/whisper_abc123.json
   //   - cat prints the JSON so we receive it as stdout
@@ -49,12 +50,12 @@ async function transcribeAudio(audioBuffer, audioFileUrl) {
   //
   // IMPORTANT: We use single quotes around this script when passing to SSH.
   // That tells the Mac shell "don't expand $REMOTE_BASE etc. here — let Linux do it."
-  // The only value we inject from Node is audioFileUrl and remoteVenvPath,
-  // which are embedded directly before the single-quote wrapping happens.
+  // The values we inject from Node (audioFileUrl, remoteVenvPath, fileExtension)
+  // are embedded as literals before the single-quote wrapping happens.
   const remoteScript = [
     'set -e',
     'REMOTE_BASE=$(mktemp /tmp/whisper_XXXXXX)',
-    'REMOTE_AUDIO="${REMOTE_BASE}.mp3"',
+    `REMOTE_AUDIO="\${REMOTE_BASE}.${fileExtension}"`,
     `curl -fsSL -o "$REMOTE_AUDIO" "${audioFileUrl}"`,
     `. "${remoteVenvPath}/bin/activate"`,
     // --verbose False suppresses the language/timestamp chatter.
