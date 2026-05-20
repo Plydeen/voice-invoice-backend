@@ -90,7 +90,7 @@ Check that the backend is alive and see what features are enabled.
   "service": "voice-invoice-backend",
   "port": 5001,
   "environment": "production",
-  "transcription_provider": "none",
+  "transcription_provider": "disabled",
   "voice_transcription_available": false,
   "claude_configured": true,
   "quickbooks_configured": true,
@@ -111,7 +111,7 @@ Minimal alive check. Returns a short JSON message and the transcription provider
 ```json
 {
   "message": "Voice Invoice API - alive",
-  "provider": "none"
+  "provider": "disabled"
 }
 ```
 
@@ -455,7 +455,7 @@ Accepts a multipart audio file upload, stores it in the `invoice_audio` Supabase
 bucket, and attempts transcription.
 
 On Railway, the upload to Supabase succeeds, but transcription returns `null`
-because the transcription provider is `none`.
+because the transcription provider is `disabled`.
 
 **Request:**
 ```
@@ -474,7 +474,7 @@ Accepted MIME types: audio/*
   "message": "Audio uploaded but transcription failed",
   "transcriptionError": "...",
   "code": "TRANSCRIPTION_ERROR",
-  "provider": "none"
+  "provider": "disabled"
 }
 ```
 
@@ -483,7 +483,7 @@ Accepted MIME types: audio/*
 ### POST /transcribe   ❌ Disabled on Railway
 
 Takes a public audio URL and attempts to transcribe it. Returns an error on Railway
-because the transcription provider is `none`.
+because the transcription provider is `disabled`.
 
 ---
 

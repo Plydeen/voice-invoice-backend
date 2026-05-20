@@ -50,7 +50,7 @@ Backend (Railway)
 
 ### Transcription is disabled in the Railway deployment
 
-`TRANSCRIPTION_PROVIDER` is set to `none` on Railway.
+`TRANSCRIPTION_PROVIDER` is set to `disabled` on Railway.
 The SSH Whisper path (`linux_ssh`) only works on the local Mac dev machine, which has
 SSH access to `linuxbox`. Railway has no such access.
 
@@ -104,7 +104,7 @@ Key variables the Railway deployment needs:
 | `SUPABASE_URL` | Supabase project URL |
 | `SUPABASE_ANON_KEY` | Supabase anon key (public) |
 | `ANTHROPIC_API_KEY` | Claude API key for invoice parsing |
-| `TRANSCRIPTION_PROVIDER` | Set to `none` on Railway |
+| `TRANSCRIPTION_PROVIDER` | Set to `disabled` on Railway |
 | `INTUIT_CLIENT_ID` | QuickBooks OAuth client ID |
 | `INTUIT_CLIENT_SECRET` | QuickBooks OAuth client secret |
 | `INTUIT_REDIRECT_URI` | Must match Intuit app settings |
