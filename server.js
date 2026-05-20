@@ -32,7 +32,7 @@ app.use(express.json());
 
 // Get transcription provider from environment
 const { transcribeAudio: transcribeAudioProvider } = require('./services/transcription/transcriber');
-const TRANSCRIPTION_PROVIDER = process.env.TRANSCRIPTION_PROVIDER || 'linux_ssh';
+const TRANSCRIPTION_PROVIDER = process.env.TRANSCRIPTION_PROVIDER || 'none';
 
 // Invoice parser (uses Claude API)
 const { parseInvoiceFromTranscript } = require('./services/invoiceParser');
@@ -43,6 +43,20 @@ console.log(`Using transcription provider: ${TRANSCRIPTION_PROVIDER}`);
 
 app.get('/', (req, res) => {
   res.json({ message: 'Voice Invoice API - alive', provider: TRANSCRIPTION_PROVIDER });
+});
+
+app.get('/health', (req, res) => {
+  res.json({
+    status: 'ok',
+    service: 'voice-invoice-backend',
+    port: PORT,
+    environment: process.env.NODE_ENV || 'development',
+    transcription_provider: TRANSCRIPTION_PROVIDER,
+    voice_transcription_available: TRANSCRIPTION_PROVIDER === 'linux_ssh',
+    claude_configured: !!process.env.ANTHROPIC_API_KEY,
+    quickbooks_configured: !!(process.env.INTUIT_CLIENT_ID && process.env.INTUIT_CLIENT_SECRET),
+    timestamp: new Date().toISOString()
+  });
 });
 
 // ============= STEP 1 & 2: AUDIO UPLOAD + TRANSCRIPTION =============
@@ -170,6 +184,52 @@ app.post('/transcribe', async (req, res) => {
   }
 });
 
+// ============= DEMO FALLBACK: PARSE TRANSCRIPT DIRECTLY =============
+//
+// Accepts a raw text transcript and returns structured invoice JSON via Claude.
+// No audio, no SSH, no Whisper needed — perfect for demos and testing.
+//
+// POST /api/parse-transcript
+// Body: { transcript: "Create an invoice for John Smith..." }
+// Returns: { success: true, invoice: { client_name, line_items, ... } }
+
+app.post('/api/parse-transcript', async (req, res) => {
+  try {
+    const { transcript } = req.body;
+
+    if (!transcript || transcript.trim().length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'transcript is required'
+      });
+    }
+
+    console.log(`[parse-transcript] Parsing ${transcript.length} chars via Claude...`);
+
+    const parseResult = await parseInvoiceFromTranscript(transcript);
+
+    if (!parseResult.success) {
+      return res.status(500).json({
+        success: false,
+        error: parseResult.error,
+        transcript
+      });
+    }
+
+    console.log(`[parse-transcript] Done. Line items: ${parseResult.invoice.line_items.length}`);
+
+    res.json({
+      success: true,
+      transcript,
+      invoice: parseResult.invoice
+    });
+
+  } catch (err) {
+    console.error('[parse-transcript] Error:', err.message);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 // ============= STAGE 3: TRANSCRIBE + PARSE + SAVE =============
 //
 // This is the main endpoint the frontend calls after uploading audio to Supabase.
@@ -192,6 +252,20 @@ app.post('/api/transcribe-and-process', async (req, res) => {
       return res.status(400).json({
         success: false,
         error: 'audio_file_url and user_id are required'
+      });
+    }
+
+    // Guard: if audio transcription is disabled (cloud/Railway mode), fail fast
+    // with a clear message instead of crashing or trying to SSH.
+    if (TRANSCRIPTION_PROVIDER !== 'linux_ssh') {
+      return res.status(503).json({
+        success: false,
+        error: 'Audio transcription is not available in this deployment.',
+        message:
+          'Voice transcription is disabled in cloud/demo mode. ' +
+          'Send a text transcript to POST /api/parse-transcript instead.',
+        demo_route: 'POST /api/parse-transcript',
+        code: 'TRANSCRIPTION_DISABLED'
       });
     }
 
@@ -331,6 +405,209 @@ app.post('/api/transcribe-and-process', async (req, res) => {
     });
   }
 });
+
+// ============= QUICKBOOKS INTEGRATION =============
+
+const {
+  buildAuthUrl,
+  exchangeCodeForTokens,
+  buildQBOInvoicePayload,
+  createQBOInvoice,
+  isQBOConfigured,
+  isQBOConnected
+} = require('./services/quickbooksService');
+
+// GET /api/quickbooks/connect
+// Returns the Intuit OAuth URL the frontend should redirect the user to.
+app.get('/api/quickbooks/connect', (req, res) => {
+  try {
+    if (!isQBOConfigured()) {
+      return res.status(503).json({
+        success: false,
+        error: 'QuickBooks not configured — INTUIT_CLIENT_ID / INTUIT_CLIENT_SECRET / INTUIT_REDIRECT_URI missing from .env',
+        missing_vars: ['INTUIT_CLIENT_ID', 'INTUIT_CLIENT_SECRET', 'INTUIT_REDIRECT_URI'].filter(v => !process.env[v])
+      });
+    }
+    const auth_url = buildAuthUrl();
+    res.json({ success: true, auth_url });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// GET /api/quickbooks/callback
+// Intuit redirects here after the user approves. Exchanges code for tokens.
+// In production: save tokens to DB. For demo: print them so you can set them in .env.
+app.get('/api/quickbooks/callback', async (req, res) => {
+  try {
+    const { code, realmId, state, error: oauthError } = req.query;
+
+    if (oauthError) {
+      return res.status(400).send(`<h1>QuickBooks Authorization Failed</h1><p>${oauthError}</p>`);
+    }
+
+    if (!code || !realmId) {
+      return res.status(400).send('<h1>Missing code or realmId in callback</h1>');
+    }
+
+    console.log('[qb-callback] Exchanging code for tokens, realmId:', realmId);
+    const tokens = await exchangeCodeForTokens(code, realmId);
+
+    console.log('[qb-callback] Got tokens! access_token starts with:', tokens.access_token.slice(0, 20));
+    console.log('[qb-callback] realm_id:', realmId);
+
+    // For the demo: show tokens in browser so they can be pasted into .env
+    // In production: save to database and set a session/cookie
+    res.send(`
+      <html><body style="font-family:monospace;padding:2em;background:#f5f5f5">
+        <h2 style="color:green">✅ QuickBooks Connected!</h2>
+        <p>Add these to your <code>voice-invoice-backend/.env</code> file:</p>
+        <pre style="background:#fff;padding:1em;border:1px solid #ccc;border-radius:4px">
+QBO_REALM_ID=${tokens.realm_id}
+QBO_ACCESS_TOKEN=${tokens.access_token}
+QBO_REFRESH_TOKEN=${tokens.refresh_token}
+        </pre>
+        <p>Then restart the backend: <code>node server.js</code></p>
+        <p><a href="http://localhost:5173">← Back to Voice Invoice</a></p>
+      </body></html>
+    `);
+  } catch (err) {
+    console.error('[qb-callback] Error:', err.message);
+    res.status(500).send(`<h1>Callback Error</h1><pre>${err.message}</pre>`);
+  }
+});
+
+// POST /api/quickbooks/dry-run
+// Takes an invoice JSON (or a draft_id) and returns the QBO-ready payload
+// WITHOUT actually creating anything. Perfect for demo if tokens aren't set yet.
+// Body: { invoice: { client_name, line_items, ... } }
+app.post('/api/quickbooks/dry-run', async (req, res) => {
+  try {
+    const { invoice, draft_id } = req.body;
+
+    let invoiceData = invoice;
+
+    // If draft_id was given, fetch from Supabase
+    if (!invoiceData && draft_id) {
+      const { data, error } = await supabase
+        .from('invoice_drafts')
+        .select('*, line_items(*)')
+        .eq('id', draft_id)
+        .single();
+      if (error) return res.status(404).json({ success: false, error: 'Draft not found' });
+      invoiceData = {
+        client_name:     data.client_name,
+        client_email:    data.client_email,
+        client_address:  data.client_address,
+        job_description: data.job_description,
+        notes:           data.notes,
+        line_items:      (data.line_items || []).map(li => ({
+          service_name: li.service_name,
+          description:  li.description,
+          quantity:     li.quantity,
+          unit_price:   li.unit_price,
+          quickbooks_item_id:   li.quickbooks_item_id,
+          quickbooks_item_name: li.quickbooks_item_name
+        }))
+      };
+    }
+
+    if (!invoiceData) {
+      return res.status(400).json({ success: false, error: 'invoice or draft_id required' });
+    }
+
+    const payload = buildQBOInvoicePayload(invoiceData);
+    const connected = isQBOConnected();
+
+    res.json({
+      success: true,
+      dry_run: true,
+      qbo_configured: isQBOConfigured(),
+      qbo_connected:  connected,
+      message: connected
+        ? 'QBO credentials are present — use /api/quickbooks/create-invoice to create for real'
+        : 'QBO not connected — this is what the invoice payload would look like',
+      qbo_invoice_payload: payload
+    });
+  } catch (err) {
+    console.error('[qb-dry-run] Error:', err.message);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// POST /api/quickbooks/create-invoice
+// Creates a real invoice in QBO using env-var tokens.
+// Body: { draft_id: "uuid" }  OR  { invoice: { ... } }
+app.post('/api/quickbooks/create-invoice', async (req, res) => {
+  try {
+    if (!isQBOConnected()) {
+      return res.status(503).json({
+        success: false,
+        error: 'QuickBooks not connected',
+        message: 'Missing one or more of: QBO_ACCESS_TOKEN, QBO_REALM_ID, INTUIT_CLIENT_ID, INTUIT_CLIENT_SECRET',
+        missing_vars: ['INTUIT_CLIENT_ID','INTUIT_CLIENT_SECRET','QBO_ACCESS_TOKEN','QBO_REALM_ID'].filter(v => !process.env[v]),
+        next_step: 'Visit GET /api/quickbooks/connect to get the OAuth URL, complete the flow, and paste the tokens into .env'
+      });
+    }
+
+    const { invoice, draft_id } = req.body;
+    let invoiceData = invoice;
+
+    // Fetch from Supabase if draft_id was given
+    if (!invoiceData && draft_id) {
+      const { data, error } = await supabase
+        .from('invoice_drafts')
+        .select('*, line_items(*)')
+        .eq('id', draft_id)
+        .single();
+      if (error) return res.status(404).json({ success: false, error: 'Draft not found' });
+      invoiceData = {
+        client_name:     data.client_name,
+        client_email:    data.client_email,
+        client_address:  data.client_address,
+        job_description: data.job_description,
+        notes:           data.notes,
+        line_items:      (data.line_items || []).map(li => ({
+          service_name: li.service_name,
+          description:  li.description,
+          quantity:     li.quantity,
+          unit_price:   li.unit_price,
+          quickbooks_item_id:   li.quickbooks_item_id,
+          quickbooks_item_name: li.quickbooks_item_name
+        }))
+      };
+    }
+
+    if (!invoiceData) {
+      return res.status(400).json({ success: false, error: 'invoice or draft_id required' });
+    }
+
+    console.log('[qb-create] Creating QBO invoice for:', invoiceData.client_name);
+
+    const result = await createQBOInvoice(
+      invoiceData,
+      process.env.QBO_ACCESS_TOKEN,
+      process.env.QBO_REALM_ID
+    );
+
+    console.log('[qb-create] QBO invoice created:', result.qbo_invoice_id);
+    res.json({ success: true, ...result });
+
+  } catch (err) {
+    const status = err.response?.status;
+    const detail = err.response?.data ? JSON.stringify(err.response.data) : err.message;
+    console.error('[qb-create] Error:', detail);
+    res.status(status || 500).json({
+      success: false,
+      error: detail,
+      hint: status === 401
+        ? 'Access token expired — use QBO_REFRESH_TOKEN to get a new one, or reconnect via /api/quickbooks/connect'
+        : undefined
+    });
+  }
+});
+
+// ============= END QUICKBOOKS =============
 
 // Start server
 app.listen(PORT, () => {

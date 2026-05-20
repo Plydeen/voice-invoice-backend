@@ -29,12 +29,44 @@ You must return ONLY a valid JSON object — no explanation, no markdown, no ext
  * @param {string} transcript - The raw Whisper transcript text
  * @returns {Promise<{success: boolean, invoice: object|null, error: string|null}>}
  */
+// ── Mock fallback ────────────────────────────────────────────────────────────
+// Set MOCK_INVOICE_PARSE=true in .env to bypass Claude and return hardcoded data.
+// Use this if the API key is expired and you still need to demo the UI flow.
+function mockParseInvoice(transcript) {
+  console.warn('[invoiceParser] MOCK MODE — returning hardcoded invoice data')
+  return {
+    success: true,
+    invoice: {
+      client_name: 'John Smith',
+      client_company: null,
+      client_phone: null,
+      client_email: null,
+      client_address: '456 Oak Street',
+      job_location: null,
+      job_description: 'Kitchen faucet replacement',
+      job_reference_number: null,
+      notes: null,
+      line_items: [
+        { service_name: 'Labor', description: 'Replaced kitchen faucet', category: 'labor', quantity: 2, unit: 'hr', unit_price: 95, is_taxable: true },
+        { service_name: 'Faucet part', description: 'Kitchen faucet part', category: 'materials', quantity: 1, unit: 'ea', unit_price: 120, is_taxable: false },
+        { service_name: 'Service call', description: 'Service call fee', category: 'labor', quantity: 1, unit: 'ea', unit_price: 75, is_taxable: true }
+      ]
+    },
+    error: null
+  }
+}
+
 async function parseInvoiceFromTranscript(transcript) {
+  // Demo/testing bypass — set MOCK_INVOICE_PARSE=true in .env
+  if (process.env.MOCK_INVOICE_PARSE === 'true') {
+    return mockParseInvoice(transcript)
+  }
+
   const apiKey = process.env.ANTHROPIC_API_KEY
 
   if (!apiKey) {
     console.error('ANTHROPIC_API_KEY is not set in .env')
-    return { success: false, invoice: null, error: 'ANTHROPIC_API_KEY is not configured' }
+    return { success: false, invoice: null, error: 'ANTHROPIC_API_KEY is not configured. Set MOCK_INVOICE_PARSE=true in .env to demo without Claude.' }
   }
 
   if (!transcript || transcript.trim().length === 0) {

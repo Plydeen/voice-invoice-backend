@@ -1,23 +1,36 @@
 /**
  * Transcription Module
- * Central dispatcher for transcription providers
- * Current provider: Linux SSH Whisper (for development)
- * Future provider: OpenAI Whisper API (for production)
+ * Central dispatcher for transcription providers.
+ *
+ * Supported values for TRANSCRIPTION_PROVIDER:
+ *   none / disabled   — audio transcription off; returns a clear error (default / Railway)
+ *   linux_ssh         — remote Whisper over SSH (local development only)
+ *
+ * Future providers (not yet implemented):
+ *   openai_whisper    — OpenAI Whisper API (cloud-safe)
+ *   deepgram          — Deepgram API (cloud-safe)
  */
 
-// Load provider from environment
-const PROVIDER = process.env.TRANSCRIPTION_PROVIDER || 'linux_ssh';
+const PROVIDER = process.env.TRANSCRIPTION_PROVIDER || 'none'
 
-let transcriber;
+let transcriber
 
 switch (PROVIDER) {
   case 'linux_ssh':
-    transcriber = require('./providers/linuxSshWhisper');
-    break;
+    transcriber = require('./providers/linuxSshWhisper')
+    break
+
+  case 'none':
+  case 'disabled':
+    transcriber = require('./providers/disabled')
+    break
+
   default:
-    console.error(`Unknown transcription provider: ${PROVIDER}`);
-    console.error('Falling back to linux_ssh provider');
-    transcriber = require('./providers/linuxSshWhisper');
+    console.warn(
+      `[transcriber] Unknown TRANSCRIPTION_PROVIDER: "${PROVIDER}". ` +
+      'Audio transcription disabled. Supported values: none, disabled, linux_ssh.'
+    )
+    transcriber = require('./providers/disabled')
 }
 
-module.exports = transcriber;
+module.exports = transcriber
